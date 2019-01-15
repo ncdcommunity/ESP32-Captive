@@ -1,0 +1,73 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+<meta content="text/html; charset=ISO-8859-1"
+http-equiv="content-type">
+<meta name = "viewport" content = "width = device-width, initial-scale = 1.0, maximum-scale = 1.0, user-scalable=0">
+<title>ESP32 Azure Demo</title>
+<style>
+body { background-color: #0067B3  ; font-family: Arial, Helvetica, Sans-Serif; Color: #FFFFFF; }
+input[type=text], select {
+    width: 100%;
+    padding: 12px 20px;
+    margin: 8px 0;
+    display: inline-block;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-sizing: border-box;
+}
+</style>
+</head>
+<body>
+<center>
+<h1 style="color:#FFFFFF; font-family:verdana;font-family: verdana;
+    padding-top: 25px;
+    padding-bottom: 25px;
+    font-size: 36px">ESP32 Azure Demo</h1>
+<h2 style="color:#FFFFFF;font-family: Verdana;
+    font: caption;
+    font-size: 27px;
+    padding-top: 25px;
+    padding-bottom: 10px;">Configure WiFiServer Settings</h2><FORM  method="post">
+      
+<div id="radio_select">
+ <input type="radio" name="configure" value="dhcp" id="radio_dhcp"> DHCP Setting &nbsp &nbsp &nbsp
+ <input type="radio" name="configure" value="staticIP" id="radio_static"> Static IP Setting<br>
+</div>
+ 
+<style>
+</style>
+<br> <br>
+<INPUT type="submit"  onClick="return settingForm()"> 
+
+<style>
+input[type="submit"]{
+    background-color: #3498DB; /* Green */
+    border: none;
+    color: white;
+    padding:15px 48px;
+    text-align: center;
+    text-decoration: none;
+    display: inline-block;
+    font-size: 16px;
+}
+</style>
+
+</FORM>
+<script type="text/javascript">
+
+function settingForm(){
+
+if(document.getElementById('radio_dhcp').checked){
+    rate_value = document.getElementById('radio_dhcp').value;
+	console.log(rate_value);
+	window.location.assign("/dhcp");
+}else if(document.getElementById('radio_static').checked){
+    rate_value = document.getElementById('radio_static').value;
+    window.location.assign("/static");
+}  
+return false;
+}
+</script>
+</center>
+</body>
