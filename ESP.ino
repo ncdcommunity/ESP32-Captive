@@ -1,12 +1,10 @@
 #include <ArduinoJson.h>
-#define _TASK_TIMEOUT
-#include <TaskScheduler.h>
 #include <WiFi.h>
 #include "FS.h"
 #include "SPIFFS.h"
 #include <EEPROM.h>
 #include <WebServer.h>
-
+#define MESSAGE_MAX_LEN 256
 
 //**************DEEP SLEEP CONFIG******************//
 #define uS_TO_S_FACTOR 1000000  
@@ -14,67 +12,19 @@
 
 //************** Auxillary functions******************//
 WebServer server(80);
-DynamicJsonBuffer jsonBuffer;
-
-//**********Task Timer**************//
-unsigned long taskSensorTimer = 0;
-unsigned long taskWiFiTimer = 0;
+StaticJsonBuffer<234> jsonBuffer;
 
 //**********softAPconfig Timer*************//
 unsigned long APTimer = 0;
 unsigned long APInterval = 120000;
 
-//**********staticAPconfig Timer*************//
-unsigned long STimer = 0;
-unsigned long SInterval = 120000;
-
-//**********dhcpAPconfig Timer*************//
-unsigned long DTimer = 0;
-unsigned long DInterval = 120000;
-
-//**********Config Timer*************//
-unsigned long ConfigTimer = 0;
-unsigned long ConfigInterval = 20000;
-
 //*********SSID and Pass for AP**************//
- static char ssidWiFi[30];//Stores the router name
- static char passWiFi[30];//Stores the password
- char ssidAP[30];//Stores the router name
- char passAP[30];//Stores the password
- const char *ssidAPConfig = "adminesp32";
- const char *passAPConfig = "adminesp32";
+const char* ssidAPConfig = "adminesp32";
+const char* passAPConfig = "adminesp32";
 
 //**********check for connection*************//
 bool isConnected = true;
 bool isAPConnected = true;
-
-
-//*********Static IP Config**************//
-IPAddress ap_local_IP(192,168,1,77);
-IPAddress ap_gateway(192,168,1,254);
-IPAddress ap_subnet(255,255,255,0);
-IPAddress ap_dhcp(192,168,4,1);
-
-
-//*********Static IP WebConfig**************//
-IPAddress ap_localWeb_IP;
-IPAddress ap_Webgateway;
-IPAddress ap_Websubnet;
-IPAddress ap_dhcpWeb_IP;
-
-
-//*********hold IP octet**************//
-uint8_t ip0;
-uint8_t ip1;
-uint8_t ip2;
-uint8_t ip3;
-
-
-//*********IP Char Array**************//
-char ipv4Arr[20];
-char gatewayArr[20];           
-char subnetArr[20];
-char ipv4dhcpArr[20];
 
 //*********Contains SPIFFS Info*************//
 String debugLogData;
@@ -93,19 +43,27 @@ const char HTTP_FORM_END[] PROGMEM= "</FORM>";
 const char HTTP_SCRIPT[] PROGMEM= "<script>function c(l){document.getElementById('ssid').value=l.innerText||l.textContent;document.getElementById('pass').focus();}</script>";
 const char HTTP_END[] PROGMEM= "</body></html>";
 
+//const char* const WEBPAGE_TABLE[] PROGMEM = {HTTP_HEAD_HTML, HTTP_STYLE, HTTP_HEAD_STYLE, HTTP_FORM_START, HTTP_CONTENT1_START, HTTP_CONTENT2_START,HTTP_CONTENT3_START,HTTP_CONTENT4_START,HTTP_CONTENT5_START,HTTP_FORM_END,HTTP_SCRIPT, };
+const char* messageStatic PROGMEM= "{\"staticSet\":\"staticValue\", \"staticIP\":\"%s\", \"staticGate\":\"%s\", \"staticSub\":\"%s\",\"ssidStatic\":\"%s\",\"staticPass\":\"%s\"}";
+const char* messageDhcp PROGMEM= "{\"dhcpSet\":\"dhcpValue\",\"ssidDHCP\":\"%s\", \"passDHCP\":\"%s\"}";
+
+const char HTTP_PAGE_STATIC[] PROGMEM = "<p>{s}<br>{g}<br>{n}<br></p>";
+const char HTTP_PAGE_DHCP[] PROGMEM = "<p>{s}</p>";
+const char HTTP_PAGE_WiFi[] PROGMEM = "<p>{s}<br>{p}</p>";
+const char HTTP_PAGE_GOHOME[] PROGMEM = "<H2><a href=\"/\">go home</a></H2><br>";
+
+char messageBuf[MESSAGE_MAX_LEN]; 
+
 void setup() {
   Serial.begin(115200);
   while(!Serial);
   WiFi.persistent(false);
-  
   WiFi.disconnect(true);
   SPIFFS.begin();
   delay(100);  
-  
   EEPROM.begin(512);
   delay(100);
   File file = SPIFFS.open("/ip_set.txt", "r");     
-
   Serial.println("- read from file:");
      if(!file){
         Serial.println("- failed to open file for reading");
@@ -120,26 +78,14 @@ void setup() {
           Serial.println("=====================================");
           Serial.println(debugLogData);
           Serial.println("=====================================");
-          if(readRoot.containsKey("statickey")){
-             String ipStaticValue= readRoot["staticIP"];
-             String gatewayValue = readRoot["gateway"];
-             String subnetValue =  readRoot["subnet"];
-             String ssidStatic = readRoot["ssidStatic"];
-             String passStatic = readRoot["passkeyStatic"];
-             Serial.println("handle Started at"+'\t' + ipStaticValue);
-             staticAPConfig(ipStaticValue,gatewayValue,subnetValue,ssidStatic,passStatic);}
-           else if(readRoot.containsKey("dhcpDefault")){
-                   String ipdhcpValue= readRoot["dhcpIP"];
-                   String ssidDhcp = readRoot["ssidDhcp"];  
-                   String passDhcp = readRoot["passkeyDhcp"];
-                   Serial.println("handle Started at"+'\t' + ipdhcpValue);
-                   dhcpAPConfig(ssidDhcp,passDhcp);}
-           else if(readRoot.containsKey("dhcpManual")){
-                   String ipdhcpValue= readRoot["staticIP"];
-                   String ssidDhcp = readRoot["ssidDhcp"];  
-                   String passDhcp = readRoot["passkeyDhcp"];
-                   Serial.println("handle Started at"+'\t' + ipdhcpValue);
-                   dhcpAPConfig(ssidDhcp,passDhcp);}
+          if(readRoot.containsKey("staticSet")){
+             Serial.println("Static IP Started ");
+             staticAPConfig(readRoot["staticIP"],readRoot["staticGate"],readRoot["staticSub"],readRoot["ssidStatic"],readRoot["staticPass"]);
+             }
+           else if(readRoot.containsKey("dhcpSet")){
+                   Serial.println("DHCP IP Started" );
+                   dhcpAPConfig(readRoot["ssidDHCP"],readRoot["passDHCP"]);
+                   }
            else{
                handleClientAP();
                }
@@ -165,11 +111,9 @@ void handleRoot() {
         }
      if(server.hasArg("ipv4static") && server.hasArg("gateway") &&  server.hasArg("subnet")){
       staticSet();
-      }else if(server.arg("ipv4")!= ""){
-          dhcpSetManual();
-        }else{
+      }else if(server.hasArg("passkeyDhcp")&&server.hasArg("ssidDhcp")){
            dhcpSetDefault();
-          }    
+        }    
     }else{
       File file = SPIFFS.open("/Select_Settings.html", "r");
          server.streamFile(file,"text/html");
@@ -181,50 +125,35 @@ void handleRoot() {
 void handleDHCP(){
   File  file = SPIFFS.open("/page_dhcp.html", "r");
   server.streamFile(file,"text/html");
-  file.close();}
+  file.close();
+  }
 
 //****************************HANDLE STATIC***************************//
 void handleStatic(){
   File  file = SPIFFS.open("/page_static.html", "r");
   server.streamFile(file,"text/html");
-  file.close();}
+  file.close();
+  }
 
 //*************Helper Meathod for Writing IP CONFIG**************//
 
 //*************Helper 1 STATIC**************//
 
 void staticSet(){
-           JsonObject& root =jsonBuffer.createObject();
-           String response="<p>The static ip is ";
-           response += server.arg("ipv4static");
-           response +="<br>";
-           response +="The gateway ip is ";
-           response +=server.arg("gateway");
-           response +="<br>";
-           response +="The subnet Mask is ";
-           response +=server.arg("subnet");
-           response +="</P><BR>";
-           response +="<H2><a href=\"/\">go home</a></H2><br>";
-           response += "<script> alert(\"Settings Saved\"); </script>";
+           String response=FPSTR(HTTP_PAGE_STATIC);
+           response.replace("{s}",server.arg("ipv4static"));
+           response.replace("{g}",server.arg("gateway"));
+           response.replace("{n}",server.arg("subnet"));
+           response+=FPSTR(HTTP_PAGE_GOHOME);
            server.send(200, "text/html", response);
-           String ipv4static = String(server.arg("ipv4static"));
-           String gateway = String(server.arg("gateway"));
-           String subnet = String(server.arg("subnet"));
-           String ssid = String(server.arg("ssidStatic"));
-           String passkey = String(server.arg("passkeyStatic"));
-           root["statickey"]="staticSet";
-           root["staticIP"] = ipv4static;
-           root["gateway"] = gateway;
-           root["subnet"] = subnet;
-           root["ssidStatic"] = ssid;
-           root["passkeyStatic"] = passkey;
-           root.printTo(Serial);
+           snprintf(messageBuf,MESSAGE_MAX_LEN,messageStatic,String(server.arg("ipv4static")),String(server.arg("gateway")),String(server.arg("subnet")),String(server.arg("ssidStatic")),String(server.arg("passkeyStatic")));
+           String str(messageBuf);
            File fileToWrite = SPIFFS.open("/ip_set.txt", FILE_WRITE);
            if(!fileToWrite){
               Serial.println("Error opening SPIFFS");
               return;
             }
-           if(root.printTo(fileToWrite)){
+             if(fileToWrite.write((uint8_t*)str.c_str(),str.length())){
                 Serial.println("--File Written");
             }else{
                 Serial.println("--Error Writing File");
@@ -233,66 +162,23 @@ void staticSet(){
              isConnected = false;
     }
 
-//*************Helper 2 DHCP MANUAL**************//
-
-void dhcpSetManual(){
-           JsonObject& root =jsonBuffer.createObject();
-           String response="<p>The dhcp IPv4 address is ";
-           response += server.arg("ipv4");
-           response +="</P><BR>";
-           response +="<H2><a href=\"/\">go home</a></H2><br>";
-           response += "<script> alert(\"Settings Saved\"); </script>";
-           server.send(200, "text/html", response);
-           String ssid = String(server.arg("ssidDhcp"));
-           String pass = String(server.arg("passkeyDhcp"));
-          
-           root["dhcpManual"]="dhcpManual";
-           root["dhcpIP"] = "192.168.4.1";
-           root["ssidDhcp"] = ssid;
-           root["passkeyDhcp"] = pass;
-           String JSONStatic;
-           root.printTo(Serial);
-           File fileToWrite = SPIFFS.open("/ip_set.txt", FILE_WRITE);
-           if(!fileToWrite){
-              Serial.println("Error opening SPIFFS");
-            }
-            
-           if(root.printTo(fileToWrite)){
-                Serial.println("--File Written");
-            }else{
-                Serial.println("--Error Writing File");
-              }
-               fileToWrite.close();           
-              
-             
-           isConnected = false;        
-  }
-
 //*************Helper 3 DHCP DEFAULT**************//
   
 void dhcpSetDefault(){
-           JsonObject& root =jsonBuffer.createObject();
-           String response="<p>The dhcp IPv4 address is ";
-           response += server.arg("configure");
-           response +="</P><BR>";
-           response +="<H2><a href=\"/\">go home</a></H2><br>";
-           response += "<script> alert(\"Settings Saved\"); </script>";
+           String response=FPSTR(HTTP_PAGE_DHCP);
+           response.replace("{s}","192.168.4.1");
+           response+=FPSTR(HTTP_PAGE_GOHOME);
            server.send(200, "text/html", response);
-           String ssid = String(server.arg("ssidDhcp"));
-           String pass = String(server.arg("passkeyDhcp"));
-           root["dhcpDefault"]="dhcpDefault";
-           root["dhcpIP"] = "192.168.4.1";
-           root["ssidDhcp"] = ssid;
-           root["passkeyDhcp"] = pass;
-           root.printTo(Serial);
+           snprintf(messageBuf,MESSAGE_MAX_LEN,messageDhcp,String(server.arg("ssidDhcp")).c_str(),String(server.arg("passkeyDhcp")).c_str());
+           String str(messageBuf);
            File fileToWrite = SPIFFS.open("/ip_set.txt", FILE_WRITE);
            if(!fileToWrite){
               Serial.println("Error opening SPIFFS");
             }
-           if(root.printTo(fileToWrite)){
-                Serial.println("--File Written");
+           if(fileToWrite.write((uint8_t*)str.c_str(),str.length())){
+                Serial.println(F("--File Written"));
             }else{
-                Serial.println("--Error Writing File");
+                Serial.println(F("--Error Writing File"));
               }           
            fileToWrite.close();  
            isConnected = false;          
@@ -304,15 +190,6 @@ void handleNotFound()
   String message = "File Not Found\n\n";
   message += "URI: ";
   message += server.uri();
-  message += "\nMethod: ";
-  message += (server.method() == HTTP_GET)?"GET":"POST";
-  message += "\nArguments: ";
-  message += server.args();
-  message += "\n";
-  for (uint8_t i=0; i<server.args(); i++){
-    message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
-  }
-  message +="<H2><a href=\"/\">go home</a></H2><br>";
   server.send(404, "text/plain", message);
 }
 
@@ -332,94 +209,86 @@ void parseBytes(const char* str, char sep, byte* bytes, int maxBytes, int base) 
 //****************HANDLE CLIENT 192.168.1.77*********************//
 
 void handleClientAP(){
- 
+   //*********Static IP Config**************//
    WiFi.mode(WIFI_AP);
    Serial.println(WiFi.softAP(ssidAPConfig,passAPConfig) ? "soft-AP setup": "Failed to connect");
    delay(100);
-   Serial.println(WiFi.softAPConfig(ap_local_IP, ap_gateway, ap_subnet)? "Configuring Soft AP" : "Error in Configuration");      
-  Serial.println(WiFi.softAPIP());
-  server.begin();
-  server.on("/", handleRoot); 
-  server.on("/dhcp", handleDHCP);
-  server.on("/static", handleStatic);
-  server.onNotFound(handleNotFound);  
+   Serial.println(WiFi.softAPConfig( IPAddress(192,168,1,77),IPAddress(192,168,1,254), IPAddress(255,255,255,0))? "Configuring Soft AP" : "Error in Configuration");      
+   Serial.println(WiFi.softAPIP());
+   server.begin();
+   server.on("/", handleRoot); 
+   server.on("/dhcp", handleDHCP);
+   server.on("/static", handleStatic);
+   server.onNotFound(handleNotFound);  
    
-  APTimer = millis();
+   APTimer = millis();
     
-  while(isConnected && millis()-APTimer<= APInterval) {
-        server.handleClient();  }       
-   esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
-   esp_deep_sleep_start();    
+   while(isConnected && millis()-APTimer<= APInterval) {
+        server.handleClient();}  
+    esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+    esp_deep_sleep_start();    
   }
   
 //***************************STATIC Helper method**************************//
 
 void  staticAPConfig(String IPStatic, String gateway, String subnet, String ssid, String pass){
-           IPStatic.toCharArray(ipv4Arr,sizeof(IPStatic)+2);
-           gateway.toCharArray(gatewayArr,sizeof(gateway)+2);
-           subnet.toCharArray(subnetArr,sizeof(subnet)+2);
-           ssid.toCharArray(ssidAP,sizeof(ssid)+2);
-           pass.toCharArray(passAP, sizeof(pass)+2);
-           Serial.print(ssidAP);
-           Serial.print(passAP);
-           byte ip[4];
-           parseBytes(ipv4Arr,'.', ip, 4, 10);
-           ip0 = (uint8_t)ip[0];
-           ip1 = (uint8_t)ip[1];
-           ip2 = (uint8_t)ip[2];
-           ip3 = (uint8_t)ip[3];
-           IPAddress ap_local(ip0,ip1,ip2,ip3);
-           ap_localWeb_IP = ap_local;
-           parseBytes(gatewayArr,'.', ip, 4, 10);
-           ip0 = (uint8_t)ip[0];
-           ip1 = (uint8_t)ip[1];
-           ip2 = (uint8_t)ip[2];
-           ip3 = (uint8_t)ip[3];
-           IPAddress ap_gate(ip0,ip1,ip2,ip3);
-           ap_Webgateway = ap_gate;
-           parseBytes(subnetArr,'.', ip, 4, 10);
-           ip0 = (uint8_t)ip[0];
-           ip1 = (uint8_t)ip[1];
-           ip2 = (uint8_t)ip[2];
-           ip3 = (uint8_t)ip[3];
-           IPAddress ap_net(ip0,ip1,ip2,ip3);  
-           ap_Websubnet= ap_net;
-          
-           WiFi.disconnect(true);
-           WiFi.mode(WIFI_AP);   
-           Serial.println(WiFi.softAP(ssidAP,passAP) ? "Setting up SoftAP" : "error setting up");
-           delay(100);       
-           Serial.println(WiFi.softAPConfig(ap_localWeb_IP, ap_gate, ap_net) ? "Configuring softAP" : "kya yaar not connected");    
-           Serial.println(WiFi.softAPIP());
-           server.begin();
-           server.on("/", handleStaticForm); 
-           server.onNotFound(handleNotFound);
+      //*********hold IP octet**************//
+      uint8_t ip0,ip1,ip2,ip3;
+      //*********IP Char Array**************//
+      Serial.print(ssid);
+      Serial.print(pass);
+      byte ip[4];
+      parseBytes(IPStatic.c_str(),'.', ip, 4, 10);
+      ip0 = (uint8_t)ip[0];
+      ip1 = (uint8_t)ip[1];
+      ip2 = (uint8_t)ip[2];
+      ip3 = (uint8_t)ip[3];
+      IPAddress ap_local(ip0,ip1,ip2,ip3);
+      parseBytes(gateway.c_str(),'.', ip, 4, 10);
+      ip0 = (uint8_t)ip[0];
+      ip1 = (uint8_t)ip[1];
+      ip2 = (uint8_t)ip[2];
+      ip3 = (uint8_t)ip[3];
+      IPAddress ap_gate(ip0,ip1,ip2,ip3);
+      parseBytes(subnet.c_str(),'.', ip, 4, 10);
+      ip0 = (uint8_t)ip[0];
+      ip1 = (uint8_t)ip[1];
+      ip2 = (uint8_t)ip[2];
+      ip3 = (uint8_t)ip[3];
+      IPAddress ap_net(ip0,ip1,ip2,ip3);  
+      WiFi.disconnect(true);
+      WiFi.mode(WIFI_AP);   
+      Serial.println(WiFi.softAP(ssid.c_str(),pass.c_str()) ? "Setting up SoftAP" : "error setting up");
+      delay(100);       
+      Serial.println(WiFi.softAPConfig(ap_local, ap_gate, ap_net) ? "Configuring softAP" : "kya yaar not connected");    
+      Serial.println(WiFi.softAPIP());
+      server.begin();
+      server.on("/", handleStaticForm); 
+      server.onNotFound(handleNotFound);
    
-            STimer = millis();
-            while(isAPConnected && millis()-STimer<= SInterval) {
-               server.handleClient();  }       
-           
-}
+      APTimer = millis();
+      while(isAPConnected && millis()-APTimer<= APInterval) {
+         server.handleClient();  }            
+    }
 
 //***************************WiFi Credintial Form**************************//
 
 void dhcpAPConfig(String ssid, String pass){
-      ssid.toCharArray(ssidAP,sizeof(ssid)+2);
-      pass.toCharArray(passAP, sizeof(pass)+2);
       WiFi.mode(WIFI_OFF);
       WiFi.softAPdisconnect(true);
       delay(1000);
       WiFi.mode(WIFI_AP);
-      Serial.println(WiFi.softAP(ssidAP,passAP) ? "Setting up SoftAP" : "error setting up");
+      Serial.println(WiFi.softAP(ssid.c_str(),pass.c_str()) ? "Setting up SoftAP" : "error setting up");
       delay(200);
       Serial.println(WiFi.softAPIP());
       
       server.begin();
       server.on("/", handleStaticForm); 
       server.onNotFound(handleNotFound);
-      DTimer = millis();
-      while(isAPConnected && millis()-DTimer<= DInterval) {
+      APTimer = millis();
+      while(isAPConnected && millis()-APTimer<= APInterval) {
        server.handleClient();  }
+       
   }
 
 //****************************HANDLE STATIC FORM***************************//
@@ -460,15 +329,11 @@ if(server.hasArg("ssid") && server.hasArg("passkey")){
           Serial.println(getRSSIasQuality(WiFi.RSSI(indices[i])));
            }
          }
-//           File  file = SPIFFS.open("/WiFi.html", "r");
-//           server.streamFile(file,"text/html");
-//           file.close();
          
          String webpage = FPSTR(HTTP_HEAD_HTML);
          webpage += FPSTR(HTTP_STYLE);
          webpage += FPSTR(HTTP_HEAD_STYLE);
          webpage += FPSTR(HTTP_FORM_START);
-         
          for(int i=0;i<n;i++){
            int quality = getRSSIasQuality(WiFi.RSSI(indices[i]));
            String item = FPSTR(HTTP_CONTENT1_START);
@@ -491,27 +356,22 @@ if(server.hasArg("ssid") && server.hasArg("passkey")){
 //****************************WiFi Credintial Submit****************************//
 
 void handleSubmitForm() {
-      String response="<p>The ssid is ";
-      response += server.arg("ssid");
-      response +="<br>";
-      response +="And the password is ";
-      response +=server.arg("passkey");
-      response +="</P><BR>";
-      response +="<H2><a href=\"/\">go home</a></H2><br>";
+      String response=FPSTR(HTTP_PAGE_WiFi);
+      response.replace("{s}",server.arg("ssid"));
+      response.replace("{p}",String(server.arg("passkey")));
+      response+=FPSTR(HTTP_PAGE_GOHOME);
       server.send(200, "text/html", response);
-      ROMwrite(String(server.arg("ssid")),String(server.arg("passkey")),String(server.arg("token")));
+      ROMwrite(String(server.arg("ssid")),String(server.arg("passkey")));
       isAPConnected = false;    
   }
   
 
 //----------Write to ROM-----------//
-void ROMwrite(String s, String p, String t){
+void ROMwrite(String s, String p){
  s+=";";
  write_EEPROM(s,0);
  p+=";";
  write_EEPROM(p,50);
- t+=";";
- write_EEPROM(t,100);
  EEPROM.commit();   
 }
 
@@ -549,11 +409,9 @@ void reconnectWiFi(){
         string_Password= read_string(30,50);        
         Serial.println("ssid: "+ string_Ssid);
         Serial.println("Password: "+string_Password);
-        string_Password.toCharArray(passWiFi,30);
-        string_Ssid.toCharArray(ssidWiFi,30);
                
   delay(400);
-  WiFi.begin(ssidWiFi,passWiFi);
+  WiFi.begin(string_Ssid.c_str(),string_Password.c_str());
   int counter = 0;
   while (WiFi.status() != WL_CONNECTED)
   {   
@@ -583,4 +441,3 @@ int getRSSIasQuality(int RSSI) {
   }
   return quality;
 }
-
